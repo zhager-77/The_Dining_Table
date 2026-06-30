@@ -1,0 +1,11 @@
+# IntelliJ
+.idea/
+*.iml
+out/
+
+# Scala / SBT
+target/
+.bsp/
+
+# Mac
+.DS_Store
