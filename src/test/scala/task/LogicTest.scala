@@ -3,364 +3,235 @@ package task
 import org.scalacheck.Gen
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatestplus.scalacheck.ScalaCheckPropertyChecks
-import task.PhilosopherState.{Eating, Hungry, Thinking}
+import task.PhilosopherState.{Eating, Thinking}
 
 class LogicTest extends AnyFunSuite with ScalaCheckPropertyChecks:
 
   test("createTable creates the required number of philosophers and forks"){
-    val table = Logic.createTable(5)
+    val (table, _) = Logic.createTable(5)
 
     assert(table.philosophers.size == 5)
     assert(table.forks.size == 5)
   }
 
   test("createTable creates thinking philosophers and free forks"){
-    val table = Logic.createTable(5)
+    val (_, state) = Logic.createTable(5)
 
-    assert(table.philosophers.forall(_.state == Thinking))
-    assert(table.forks.forall(_.takeBy.isEmpty))
+    assert(state.philosopherState.values.forall(_ == Thinking))
+    assert(state.takenForks.isEmpty)
   }
 
-  test("becomeHungry changes the selected philosopher state to Hungry"){
-    val table = Logic.createTable(5)
+  test("tryEat changes Thinking philosopher to Eating and takes both forks"){
+    val (table, state) = Logic.createTable(5)
 
-    val result = Logic.becomeHungry(table, 2)
+    val result = Logic.tryEat(2, table, state)
 
-    assert(result.exists{updatedTable =>
-      updatedTable.philosophers.find(_.id == 2).exists(_.state == Hungry)
-    })
+    assert(result.exists(_.philosopherState(2) == Eating))
+    assert(result.exists(s => s.takenForks(1) == 2 && s.takenForks(2) == 2))
   }
 
-  test("becomeHungry does not change other philosophers and forks"){
-    val table = Logic.createTable(5)
-
-    val result = Logic.becomeHungry(table, 2)
-
-    assert(result.exists{updatedTable =>
-      updatedTable.philosophers.filterNot(_.id == 2).forall(_.state == Thinking)
-    })
-
-    assert(result.exists{updatedTable =>
-      updatedTable.forks == table.forks
-    })
-  }
-
-  test("becomeHungry not missing philosopher"){
-    val table = Logic.createTable(5)
-
-    val result = Logic.becomeHungry(table, 99)
-
-    assert(result == Left(Errors.PhilosopherNotFound(99)))
-  }
-
-  test("tryEat changes Hungry philosopher to Eating and takes both forks"){
-    val table = Logic.createTable(5)
+  test("tryEat returns PhilosopherNotThinking if philosopher is already Eating"){
+    val (table, state) = Logic.createTable(5)
 
     val result =
       for
-        hungryTable <- Logic.becomeHungry(table, 2)
-        eatingTable <- Logic.tryEat(hungryTable, 2)
-      yield eatingTable
+        eatingState <- Logic.tryEat(2, table, state)
+        secondTry <- Logic.tryEat(2, table, eatingState)
+      yield secondTry
 
-    assert(result.exists(updatedTable =>
-    updatedTable.philosophers.find(_.id == 2).exists(_.state == Eating)))
-
-    assert(result.exists(updatedTable =>
-    updatedTable.forks.find(_.id == 1).exists(_.takeBy.contains(2)) &&
-    updatedTable.forks.find(_.id == 2).exists(_.takeBy.contains(2))
-    ))
-  }
-
-  test("tryEat returns PhilosopherNotHungry if philosopher state is Thinking"){
-    val table = Logic.createTable(5)
-
-    val result = Logic.tryEat(table, 2)
-
-    assert(result == Left(Errors.PhilosopherNotHungry(2)))
+    assert(result == Left(Errors.PhilosopherNotThinking(2)))
   }
 
   test("tryEat returns PhilosopherNotFound for a missing philosopher"){
-    val table = Logic.createTable(5)
+    val (table, state) = Logic.createTable(5)
 
-    val result = Logic.tryEat(table, 99)
+    val result = Logic.tryEat(99, table, state)
 
     assert(result == Left(Errors.PhilosopherNotFound(99)))
   }
 
-  test("tryEat returns ForkAlreadyTaken when one of the required forks is occupied"){
-    val table = Logic.createTable(5)
+  test("tryEat returns ForkTaken when one of the required forks is occupied"){
+    val (table, state) = Logic.createTable(5)
 
     val result =
       for
-        hungryPhilosopher2 <- Logic.becomeHungry(table, 2)
-        philosopher2Eating <- Logic.tryEat(hungryPhilosopher2, 2)
-        hungryPhilosopher3 <- Logic.becomeHungry(philosopher2Eating, 3)
-        result <- Logic.tryEat(hungryPhilosopher3, 3)
-      yield result
+        afterPhilosopher2 <- Logic.tryEat(2, table, state)
+        result <- Logic.tryEat(3, table, afterPhilosopher2)
+      yield()
 
     assert(result == Left(Errors.ForkTaken(2, 2)))
   }
 
 
   test("tryEat does not change unrelated philosophers and forks"){
-    val table = Logic.createTable(5)
+    val (table, state) = Logic.createTable(5)
 
-    val result =
-      for
-        hungryTable <- Logic.becomeHungry(table, 2)
-        eatingTable <- Logic.tryEat(hungryTable, 2)
-      yield eatingTable
+    val result = Logic.tryEat(2, table, state)
 
-    assert(result.exists(updatedTable =>
-    updatedTable.philosophers.filterNot(_.id == 2).forall(_.state == Thinking)))
-
-    assert(result.exists(updatedTable =>
-    updatedTable.forks.find(_.id == 0).exists(_.takeBy.isEmpty) &&
-    updatedTable.forks.find(_.id == 3).exists(_.takeBy.isEmpty) &&
-    updatedTable.forks.find(_.id == 4).exists(_.takeBy.isEmpty)))
+    assert(result.exists(s =>
+      s.philosopherState.filter(_._1 != 2).values.forall(_ == Thinking)
+    ))
+    assert(result.exists(s =>
+      !s.takenForks.contains(0) && !s.takenForks.contains(3) && !s.takenForks.contains(4)
+    ))
   }
 
   test("finishEating changes Eating philosopher to Thinking and releases both forks"){
-    val table = Logic.createTable(5)
+    val (table, state) = Logic.createTable(5)
 
     val result =
       for
-        hungryTable <- Logic.becomeHungry(table, 2)
-        eatingTable <- Logic.tryEat(hungryTable, 2)
-        finishTable <- Logic.finishEating(eatingTable, 2)
-      yield finishTable
+        eatingState <- Logic.tryEat(2, table, state)
+        finishedState <- Logic.finishEating(2, table, eatingState)
+      yield finishedState
 
-    assert(result.exists(updatedTable =>
-    updatedTable.philosophers.find(_.id == 2).exists(_.state == Thinking)))
-
-    assert(result.exists(updatedTable =>
-    updatedTable.forks.find(_.id == 1).exists(_.takeBy.isEmpty) &&
-    updatedTable.forks.find(_.id == 2).exists(_.takeBy.isEmpty)))
+    assert(result.exists(_.philosopherState(2) == Thinking))
+    assert(result.exists(s => !s.takenForks.contains(1) && !s.takenForks.contains(2)))
   }
 
   test("finishEating returns PhilosopherNotEating if philosopher is not Eating"){
-    val table = Logic.createTable(5)
+    val (table, state) = Logic.createTable(5)
 
-    val result = Logic.finishEating(table, 2)
+    val result = Logic.finishEating(2, table, state)
 
     assert(result == Left(Errors.PhilosopherNotEating(2)))
   }
 
   test("finishEating returns PhilosopherNotFound for a missing philosopher"){
-    val table = Logic.createTable(5)
+    val (table, state) = Logic.createTable(5)
 
-    val result = Logic.finishEating(table, 99)
+    val result = Logic.finishEating(99, table, state)
 
     assert(result == Left(Errors.PhilosopherNotFound(99)))
   }
 
   test("finishEating does not change unrelated philosophers or forks"){
-    val table = Logic.createTable(5)
-
-    val result = {
-      for
-        hungryTable <- Logic.becomeHungry(table, 2)
-        eatingTable <- Logic.tryEat(hungryTable, 2)
-        finishTable <- Logic.finishEating(eatingTable, 2)
-      yield finishTable
-    }
-
-    assert(result.exists(updatedTable =>
-    updatedTable.philosophers.filterNot(_.id == 2).forall(_.state == Thinking)))
-
-    assert(result.exists(updatedTable =>
-    updatedTable.forks.find(_.id == 0).exists(_.takeBy.isEmpty) &&
-    updatedTable.forks.find(_.id == 3).exists(_.takeBy.isEmpty) &&
-    updatedTable.forks.find(_.id == 4).exists(_.takeBy.isEmpty)))
-  }
-
-  test("tryEat for philosopher 0 takes the last and the first fork"){
-    val table = Logic.createTable(5)
+    val (table, state) = Logic.createTable(5)
 
     val result =
       for
-        hungryTable <- Logic.becomeHungry(table, 0)
-        eatingTable <- Logic.tryEat(hungryTable, 0)
-      yield eatingTable
+        eatingState <- Logic.tryEat(2, table, state)
+        finishedState <- Logic.finishEating(2, table, eatingState)
+      yield finishedState
 
-    assert(result.exists(updatedTable =>
-    updatedTable.philosophers.find(_.id == 0).exists(_.state == Eating)))
 
-    assert(result.exists(updatedTable =>
-    updatedTable.forks.find(_.id == 4).exists(_.takeBy.contains(0) &&
-    updatedTable.forks.find(_.id == 0).exists(_.takeBy.contains(0)))))
+    assert(result.exists(s =>
+      s.philosopherState.filter(_._1 != 2).values.forall(_ == Thinking)
+    ))
+    assert(result.exists(s =>
+      !s.takenForks.contains(0) && !s.takenForks.contains(3) && !s.takenForks.contains(4)))
+  }
+
+  test("tryEat for philosopher 0 takes the last and the first fork"){
+    val (table, state) = Logic.createTable(5)
+
+    val result = Logic.tryEat(0, table, state)
+
+    assert(result.exists(_.philosopherState(0) == Eating))
+    assert(result.exists(s => s.takenForks(4) == 0 && s.takenForks(0) == 0))
   }
 
 
   test("property: createTable keeps philosophers and forks count equal to size"){
-    val positiveTableSizes = Gen.choose(1, 100)
+   forAll(Gen.choose(1, 100)) {size =>
+     val (table, _) = Logic.createTable(size)
 
-    forAll(positiveTableSizes){size =>
-      val table = Logic.createTable(size)
-
-      assert(table.philosophers.size == size)
-      assert(table.forks.size == size)
-    }
+     assert(table.philosophers.size == size)
+     assert(table.forks.size == size)
+   }
   }
 
   test("property: createTable creates only Thinking philosophers and free forks"){
-    val positiveTable = Gen.choose(1, 100)
+    forAll(Gen.choose(1, 100)){ size =>
+      val(_, state) = Logic.createTable(size)
 
-    forAll(positiveTable){size =>
-      val table = Logic.createTable(size)
-
-      assert(table.philosophers.forall(_.state == Thinking))
-      assert(table.forks.forall(_.takeBy.isEmpty))
+      assert(state.philosopherState.values.forall(_ == Thinking))
+      assert(state.takenForks.isEmpty)
     }
   }
 
-  test("property: becomeHungry changes selected philosopher to Hungry"){
-    val tableSizes = Gen.choose(1, 100)
+  test("property: tryEat changes Thinking philosopher to Eating"){
+    forAll(Gen.choose(2, 100)){ size =>
+      forAll(Gen.choose(0, size - 1)){ philosopherId =>
+        val (table, state) = Logic.createTable(size)
 
-    forAll(tableSizes){size =>
-      val philosopherIds = Gen.choose(0, size - 1)
+        val result = Logic.tryEat(philosopherId, table, state)
 
-      forAll(philosopherIds){philosopherId =>
-        val table = Logic.createTable(size)
-        val result = Logic.becomeHungry(table, philosopherId)
-
-        assert(result.exists(updatedTable =>
-        updatedTable.philosophers.find(_.id == philosopherId).exists(_.state == Hungry)))
-    }
-  }
-  }
-
-  test("property: becomeHungry does not change other philosophers or forks"){
-    val tableSizes = Gen.choose(1, 100)
-
-    forAll(tableSizes){size =>
-      val philosopherIds = Gen.choose(0, size - 1)
-
-      forAll(philosopherIds){philosopherId =>
-        val table = Logic.createTable(size)
-        val result = Logic.becomeHungry(table, philosopherId)
-
-        assert(result.exists(updatedTable =>
-        updatedTable.philosophers.filterNot(_.id == philosopherId).forall(_.state == Thinking)))
-
-        assert(result.exists(updatedTable =>
-          updatedTable.forks == table.forks))
-      }
-    }
-  }
-
-  test("property: tryEat changes Hungry philosopher to Eating"){
-    val tableSizes = Gen.choose(2, 100)
-
-    forAll(tableSizes){size =>
-      val philosopherIds = Gen.choose(0, size - 1)
-
-      forAll(philosopherIds){philosopherId =>
-        val table = Logic.createTable(size)
-
-        val result =
-          for
-            hungryTable <- Logic.becomeHungry(table, philosopherId)
-            eatingTable <- Logic.tryEat(hungryTable, philosopherId)
-          yield eatingTable
-
-        assert(result.exists(updatedTable =>
-        updatedTable.philosophers.find(_.id == philosopherId).exists(_.state == Eating)))
+        assert(result.exists(_.philosopherState(philosopherId) == Eating))
       }
     }
   }
 
   test("property: tryEat takes the left and right forks of the selected philosopher"){
-    val tableSizes = Gen.choose(2, 100)
+    forAll(Gen.choose(2, 100)){ size =>
+      forAll(Gen.choose(0, size - 1)){ philosopherId =>
+        val (table, state) = Logic.createTable(size)
 
-    forAll(tableSizes){size =>
-      val philosopherIds = Gen.choose(0, size - 1)
-
-      forAll(philosopherIds){philosopherId =>
-        val table = Logic.createTable(size)
-
-        val result =
-          for
-            hungryTable <- Logic.becomeHungry(table, philosopherId)
-            eatingTable <- Logic.tryEat(hungryTable, philosopherId)
-          yield eatingTable
+        val result = Logic.tryEat(philosopherId, table, state)
 
         val expectedLeftForkId =
-          if philosopherId == 0 then size - 1
-          else philosopherId - 1
-
+          if philosopherId == 0 then size - 1 else philosopherId - 1
         val expectedRightForkId = philosopherId
 
-        assert(result.exists(updatedTable =>
-        updatedTable.forks.find(_.id == expectedLeftForkId).exists(_.takeBy.contains(philosopherId))
-        &&
-        updatedTable.forks.find(_.id == expectedRightForkId).exists(_.takeBy.contains(philosopherId))))
+        assert(result.exists(s =>
+        s.takenForks(expectedLeftForkId) == philosopherId &&
+        s.takenForks(expectedRightForkId) == philosopherId
+        ))
       }
     }
   }
 
-  test("property: finishEating changes Eating philosopher back to Thinking"){
-    val tableSizes = Gen.choose(2, 100)
-
-    forAll(tableSizes){size =>
-      val philosopherIds = Gen.choose(0, size - 1)
-
-      forAll(philosopherIds){philosopherId =>
-        val table = Logic.createTable(size)
+  test("property: finishEating changes philosopher back to Thinking"){
+    forAll(Gen.choose(2, 100)){size =>
+      forAll(Gen.choose(0, size - 1)){philosopherId =>
+        val(table, state) = Logic.createTable(size)
 
         val result =
           for
-            hungryTable <- Logic.becomeHungry(table, philosopherId)
-            eatingTable <- Logic.tryEat(hungryTable, philosopherId)
-            finishedTable <- Logic.finishEating(eatingTable, philosopherId)
-          yield finishedTable
+            eatingState <- Logic.tryEat(philosopherId, table, state)
+            finishedState <- Logic.finishEating(philosopherId, table, eatingState)
+          yield finishedState
 
-        assert(result.exists(updatedTable =>
-            updatedTable.philosophers.find(_.id == philosopherId).exists(_.state == Thinking)))
+        assert(result.exists(_.philosopherState(philosopherId) == Thinking))
       }
     }
   }
 
   test("property: finishEating releases the left and right forks of the selected philosopher"){
-    val tableSizes = Gen.choose(2, 100)
-
-    forAll(tableSizes){size =>
-      val philosopherIds = Gen.choose(0, size - 1)
-
-      forAll(philosopherIds){philosopherId =>
-        val table = Logic.createTable(size)
+    forAll(Gen.choose(2, 100)){ size =>
+      forAll(Gen.choose(0, size - 1)){philosopherId =>
+        val (table, state) = Logic.createTable(size)
 
         val result =
           for
-            hungryTable <- Logic.becomeHungry(table, philosopherId)
-            eatingTable <- Logic.tryEat(hungryTable, philosopherId)
-            finishedTable <- Logic.finishEating(eatingTable, philosopherId)
-          yield finishedTable
+            eatingState <- Logic.tryEat(philosopherId, table, state)
+            finishedState <- Logic.finishEating(philosopherId, table, eatingState)
+          yield finishedState
 
         val expectedLeftForkId =
-          if philosopherId == 0 then size - 1
-          else philosopherId - 1
-
+          if philosopherId == 0 then size - 1 else philosopherId - 1
         val expectedRightForkId = philosopherId
 
-        assert(result.exists(updatedTable =>
-        updatedTable.forks.find(_.id == expectedLeftForkId).exists(_.takeBy.isEmpty) &&
-        updatedTable.forks.find(_.id == expectedRightForkId).exists(_.takeBy.isEmpty)))
+        assert(result.exists(s =>
+          !s.takenForks.contains(expectedLeftForkId) &&
+          !s.takenForks.contains(expectedRightForkId)
+        ))
       }
     }
   }
 
-  test("property: tryEat returns PhilosopherNotHungry for Thinking philosopher"){
-    val tableSizes = Gen.choose(2, 100)
+  test("property: tryEat returns PhilosopherNotThinking for already Eating philosopher"){
+    forAll(Gen.choose(2, 100)){size =>
+      forAll(Gen.choose(0, size - 1)){philosopherId =>
+        val (table, state) = Logic.createTable(size)
 
-    forAll(tableSizes){size =>
-      val philosopherIds = Gen.choose(0, size - 1)
+        val result =
+          for
+            eatingState <- Logic.tryEat(philosopherId, table, state)
+            secondTry <- Logic.tryEat(philosopherId, table, eatingState)
+          yield secondTry
 
-      forAll(philosopherIds){philosopherId =>
-        val table = Logic.createTable(size)
-        val result = Logic.tryEat(table, philosopherId)
-
-        assert(result == Left(Errors.PhilosopherNotHungry(philosopherId)))
+        assert(result == Left(Errors.PhilosopherNotThinking(philosopherId)))
       }
     }
   }
