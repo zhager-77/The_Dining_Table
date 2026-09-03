@@ -1,113 +1,161 @@
 package task
 
-import task.Errors.{PhilosopherNotEating, PhilosopherNotHungry}
-import task.PhilosopherState.{Eating, Hungry}
+import task.Errors.{PhilosopherNotEating, PhilosopherNotThinking}
+import task.PhilosopherState.{Eating, Thinking}
 
 object Logic:
-  
-  //Создаем стол
-  def createTable(size: Int): Table =
-    Table(philosophers = Vector.tabulate(size)(id =>
-    Philosopher(id, PhilosopherState.Thinking)),
-      forks = Vector.tabulate(size)(id =>
-      Fork(id, None)))
 
-  
-  //Даем нумерацию левой вилке каждого философа 
-  def leftForkId(table: Table, philosopherId: Int): Int =
-    if philosopherId == 0 then table.forks.size - 1
-    else philosopherId - 1
+  // Создаем стол
+  def createTable(size: Int): (Table, TableState) =
+    val table = Table(
+      philosophers =
+        Vector.tabulate(size)(id => Philosopher(PhilosopherId(id))),
+      forks = Vector.tabulate(size)(id => Fork(ForkId(id)))
+    )
+    val state = TableState(
+      takenForks = Map.empty,
+      philosopherState = (0 until size)
+        .map(id => PhilosopherId(id) -> PhilosopherState.Thinking)
+        .toMap,
+      meals = (0 until size).map(id => PhilosopherId(id) -> 0).toMap
+    )
+    (table, state)
 
-  
-  //Даем нумерацию правой вилке каждого философа 
-  def rightForkId(philosopherId: Int): Int =
-    philosopherId
+  // Даем нумерацию левой вилке каждого философа
+  def leftForkId(table: Table, philosopherId: PhilosopherId): ForkId =
+    if philosopherId.value == 0 then ForkId(table.forks.size - 1)
+    else ForkId(philosopherId.value - 1)
 
+  // Даем нумерацию правой вилке каждого философа
+  def rightForkId(philosopherId: PhilosopherId): ForkId =
+    ForkId(philosopherId.value)
 
-  //Обновляем состояние философа
-  private def updatePhilosopher(table: Table, philosopherId: Int)
-                               (f: Philosopher => Philosopher): Either[Errors, Table] =
-    if table.philosophers.exists(_.id == philosopherId) then
-      Right(table.copy(
-        philosophers = table.philosophers.map{philosopher =>
-          if philosopher.id == philosopherId then f(philosopher)
-          else philosopher
-          }
-        )
-      )
-    else
-      Left(Errors.PhilosopherNotFound(philosopherId))
+  // Обновляем состояние философа
+  private def updatedState(
+      tableState: TableState,
+      philosopherId: PhilosopherId
+  )(
+      f: PhilosopherState => PhilosopherState
+  ): TableState = {
+    tableState.copy(philosopherState =
+      tableState.philosopherState.updatedWith(philosopherId)(_.map(f))
+    )
+  }
 
-  //Делаем философа голодным, меняя состояние на Hungry
-  def becomeHungry(table: Table, philosopherId: Int): Either[Errors, Table] =
-    updatePhilosopher(table, philosopherId){philosopher =>
-      philosopher.copy(state = Hungry)
-    }
-
-
-  //Меняем состояние на Eating
-  def tryEat(table: Table, philosopherId: Int): Either[Errors, Table] =
+  // Меняем состояние на Eating
+  def tryEat(
+      philosopherId: PhilosopherId,
+      table: Table,
+      tableState: TableState
+  ): Either[Errors, TableState] =
     for
-      philosopher <- findPhilosopher(table, philosopherId)
-      _ <- ensureHungry(philosopher)
+      state = findPhilosopherState(tableState, philosopherId)
+      _ <- ensureThinking(state, philosopherId)
+      _ <- ensureMaxEat(tableState, table, philosopherId)
       leftId = leftForkId(table, philosopherId)
       rightId = rightForkId(philosopherId)
-      leftFork <- findFork(table, leftId)
-      rightFork <- findFork(table, rightId)
-      _ <- ensureForkFree(leftFork)
-      _ <- ensureForkFree(rightFork)
-      tableWithTakenForks = takeForks(table, philosopherId, leftId, rightId)
-      tableWithEatingPhilosopher <- updatePhilosopher(tableWithTakenForks, philosopherId){philosopher =>
-        philosopher.copy(state = PhilosopherState.Eating)
-      }
-    yield tableWithEatingPhilosopher
+      _ <- ensureForkFree(tableState, leftId)
+      _ <- ensureForkFree(tableState, rightId)
+      stateWithForks = takeForks(tableState, philosopherId, leftId, rightId)
+      finalState = updatedState(stateWithForks, philosopherId)(_ => Eating)
+    yield incrementMeals(finalState, philosopherId)
 
-  def findPhilosopher(table: Table, philosopherId: Int): Either[Errors, Philosopher] =
-    table.philosophers.find(_.id == philosopherId).toRight(Errors.PhilosopherNotFound(philosopherId))
+  def findPhilosopherState(
+      tableState: TableState,
+      philosopherId: PhilosopherId
+  ): PhilosopherState =
+    tableState.philosopherState(philosopherId)
 
-  def ensureHungry(philosopher: Philosopher): Either[Errors, Unit] =
-    if philosopher.state == Hungry then Right(())
-    else Left(PhilosopherNotHungry(philosopher.id))
+  def ensureThinking(
+      philosopherState: PhilosopherState,
+      philosopherId: PhilosopherId
+  ): Either[Errors, Unit] =
+    if philosopherState == Thinking then Right(())
+    else Left(PhilosopherNotThinking(philosopherId))
 
-  def findFork(table: Table, forkId: Int): Either[Errors, Fork] =
-    table.forks.find(_.id == forkId).toRight(Errors.ForkNotFound(forkId))
-
-  def ensureForkFree(fork: Fork): Either[Errors, Unit] =
-    fork.takeBy match {
-      case None => Right(())
-      case Some(philosopherId) => Left(Errors.ForkTaken(fork.id, philosopherId))
+  def ensureForkFree(
+      tableState: TableState,
+      forkId: ForkId
+  ): Either[Errors, Unit] =
+    tableState.takenForks.get(forkId) match {
+      case None              => Right(())
+      case Some(philosopher) => Left(Errors.ForkTaken(forkId, philosopher))
     }
 
-  def takeForks(table: Table, philosopherId: Int, leftForkId: Int, rightForkId: Int): Table =
-    table.copy(forks = table.forks.map{fork =>
-      if fork.id == leftForkId || fork.id == rightForkId then
-        fork.copy(takeBy = Some(philosopherId))
-      else
-        fork
-    })
+  def takeForks(
+      tableState: TableState,
+      philosopherId: PhilosopherId,
+      leftId: ForkId,
+      rightId: ForkId
+  ): TableState =
+    tableState.copy(takenForks =
+      tableState.takenForks + (leftId -> philosopherId) + (rightId -> philosopherId)
+    )
 
+  private def incrementMeals(
+      tableState: TableState,
+      philosopherId: PhilosopherId
+  ): TableState =
+    tableState.copy(meals =
+      tableState.meals.updatedWith(philosopherId)(_.map(_ + 1))
+    )
 
-  def finishEating(table: Table, philosopherId: Int): Either[Errors, Table] =
-    for 
-      philosopher <- findPhilosopher(table, philosopherId)
-      _ <- ensureEating(philosopher)
+  def finishEating(
+      philosopherId: PhilosopherId,
+      table: Table,
+      tableState: TableState
+  ): Either[Errors, TableState] =
+    for
+      state = findPhilosopherState(tableState, philosopherId)
+      _ <- ensureEating(state, philosopherId)
       leftId = leftForkId(table, philosopherId)
       rightId = rightForkId(philosopherId)
-      tableWithReleasedForks = releaseForks(table, leftId, rightId)
-      tableWithThinkingPhilosopher <- updatePhilosopher(tableWithReleasedForks, philosopherId) { philosopher =>
-        philosopher.copy(state = PhilosopherState.Thinking)
-      }
-    yield tableWithThinkingPhilosopher
+      stateWithReleasedForks = releaseForks(tableState, leftId, rightId)
+      finalState = updatedState(stateWithReleasedForks, philosopherId)(_ =>
+        Thinking
+      )
+    yield finalState
 
+  def ensureEating(
+      philosopherState: PhilosopherState,
+      philosopherId: PhilosopherId
+  ): Either[Errors, Unit] =
+    if philosopherState == Eating then Right(())
+    else Left(PhilosopherNotEating(philosopherId))
 
-  def ensureEating(philosopher: Philosopher): Either[Errors, Unit] =
-    if philosopher.state == Eating then Right(())
-    else Left(PhilosopherNotEating(philosopher.id))
+  def releaseForks(
+      tableState: TableState,
+      leftId: ForkId,
+      rightID: ForkId
+  ): TableState =
+    tableState.copy(takenForks = tableState.takenForks - leftId - rightID)
 
-  def releaseForks(table: Table, leftForkId: Int, rightForkId: Int): Table =
-    table.copy(forks = table.forks.map{fork =>
-      if fork.id == leftForkId || fork.id == rightForkId then
-        fork.copy(takeBy = None)
-      else
-        fork
-    })
+  def leftNeighborId(
+      table: Table,
+      philosopherId: PhilosopherId
+  ): PhilosopherId =
+    val n = table.philosophers.size
+    PhilosopherId((philosopherId.value - 1 + n) % n)
+
+  def rightNeighborId(
+      table: Table,
+      philosopherId: PhilosopherId
+  ): PhilosopherId =
+    val n = table.philosophers.size
+    PhilosopherId((philosopherId.value + 1) % n)
+
+  def ensureMaxEat(
+      tableState: TableState,
+      table: Table,
+      philosopherId: PhilosopherId
+  ): Either[Errors, Unit] =
+    val myMeals = tableState.meals.getOrElse(philosopherId, 0)
+    val leftMeals =
+      tableState.meals.getOrElse(leftNeighborId(table, philosopherId), 0)
+    val rightMeals =
+      tableState.meals.getOrElse(rightNeighborId(table, philosopherId), 0)
+    val maxMeals = 2
+
+    if myMeals - math.min(leftMeals, rightMeals) > maxMeals then
+      Left(Errors.MoreThenMaxMeal(philosopherId))
+    else Right(())

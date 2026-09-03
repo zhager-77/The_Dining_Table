@@ -1,3 +1,8 @@
 package task
-//Одна вилка, у которой есть id и условие занята она или нет 
-final case class Fork(id: Int, takeBy: Option[Int])
+//Одна вилка
+
+opaque type ForkId = Int
+object ForkId:
+  def apply(value: Int): ForkId = value
+  extension (id: ForkId) def value: Int = id
+final case class Fork(id: ForkId)
