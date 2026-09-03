@@ -1,7 +1,6 @@
 package task
 
 import scala.concurrent.duration.DurationInt
-import task.Logic.*
 import cats.effect.{Async, IO, IOApp, Ref}
 import cats.syntax.all.*
 import org.typelevel.log4cats.Logger
@@ -22,7 +21,7 @@ object Main extends IOApp.Simple:
       philosopherList = table.philosophers.toList.map { philosopher =>
         runPhilosopherSafely[IO](ref, table, philosopher.id)
       }
-        _ <- (printMeals[IO](ref) :: philosopherList).parSequence
+      _ <- (printMeals[IO](ref) :: philosopherList).parSequence
     yield ()
 
   private def runPhilosopherSafely[F[_]: Async](
@@ -30,19 +29,19 @@ object Main extends IOApp.Simple:
       table: Table,
       philosopherId: PhilosopherId
   )(using Logger[F]): F[Unit] =
-    Logger[F].info(s"Philosopher ${philosopherId.value} thread started") *>
-      philosopherLoop(ref, table, philosopherId).handleErrorWith { error =>
-        Logger[F].info(
-          s"Philosopher ${philosopherId.value} crashed ${error.getMessage}"
-        )
-      }
+    Logger[F].info(s"Philosopher ${philosopherId.value} thread started")
+      *> philosopherLoop(ref, table, philosopherId)
 
   private def philosopherLoop[F[_]: Async](
       ref: Ref[F, TableState],
       table: Table,
       philosopherId: PhilosopherId
   )(using Logger[F]): F[Unit] =
-    for
+    (for
+      _ <- Async[F].delay(
+        if (Random.nextInt(2) % 2 == 0) throw new RuntimeException("test")
+        else ()
+      )
       _ <- logState(ref, s" Philosopher ${philosopherId.value} is thinking")
       _ <- pause(500, 1500)
       startedEating <- tryStartEating(ref, table, philosopherId)
@@ -54,29 +53,46 @@ object Main extends IOApp.Simple:
             _ <- finishEatingSafely(ref, table, philosopherId)
           yield ()
         else pause(300, 800)
-      _ <- philosopherLoop(ref, table, philosopherId)
-    yield ()
+    yield ()).handleErrorWith { error =>
+      Logger[F].info(
+        s"Philosopher ${philosopherId.value} crashed ${error.getMessage}"
+      )
+    } >> philosopherLoop(ref, table, philosopherId)
 
   def tryStartEating[F[_]: Async](
       ref: Ref[F, TableState],
       table: Table,
       philosopherId: PhilosopherId
-  ): F[Boolean] =
-    ref.modify { tableState =>
-      Logic.tryEat(philosopherId, table, tableState) match {
-        case Right(newState) => (newState, true)
-        case Left(_)         => (tableState, false)
+  )(using Logger[F]): F[Boolean] = {
+    for
+      result <- ref.modify { tableState =>
+        Logic.tryEat(philosopherId, table, tableState) match {
+          case Right(newState) => (newState, None)
+          case Left(error)     => (tableState, Some(error))
+        }
       }
-    }
+      _ <- result.fold(Async[F].unit)(error =>
+        Logger[F].info(s"Philosopher ${philosopherId.value} couldnt eat: $error")
+      )
+    yield result.isEmpty
+  }
 
   def finishEatingSafely[F[_]: Async](
       ref: Ref[F, TableState],
       table: Table,
       philosopherId: PhilosopherId
-  ): F[Unit] =
-    ref.update { tableState =>
-      Logic.finishEating(philosopherId, table, tableState).getOrElse(tableState)
-    }
+  )(using Logger[F]): F[Unit] =
+    for
+      result <- ref.modify { tableState =>
+        Logic.finishEating(philosopherId, table, tableState) match {
+          case Right(newState) => (newState, None)
+          case Left(error) => (tableState, Some(error))
+        }
+      }
+      _ <- result.fold(Async[F].unit)(error =>
+        Logger[F].info(s"Philosopher ${philosopherId.value} try to finish eat but couldnt: $error")
+      )
+    yield ()
 
   private def pause[F[_]: Async](minMillis: Int, maxMillis: Int): F[Unit] =
     val delay = minMillis + Random.nextInt(maxMillis - minMillis + 1)
